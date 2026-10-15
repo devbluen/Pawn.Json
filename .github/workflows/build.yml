@@ -1,0 +1,151 @@
+name: Build Pawn.Json
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to embed in the build (MAJOR.MINOR.PATCH). Empty = the one in CMakeLists.txt"
+        required: false
+        type: string
+        default: ""
+      publish_release:
+        description: "Publish a GitHub release (tag v<version>) with both zips"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  # One job per platform, each with its own artifact, so users download only
+  # the one their server needs. Both run on Windows exactly like a developer
+  # machine does: Windows natively, Linux cross-compiled with Zig.
+  release:
+    name: ${{ matrix.platform }} x86 (build.ps1)
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [windows, linux]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version
+        shell: pwsh
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          $version = $env:INPUT_VERSION
+          if (-not $version) {
+              $version = (Select-String -Path CMakeLists.txt -Pattern 'set\(PAWN_JSON_VERSION "(\d+\.\d+\.\d+)"').Matches[0].Groups[1].Value
+          }
+          if ($version -notmatch '^\d+\.\d+\.\d+$') { throw "Invalid version '$version'" }
+          "RELEASE_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Build
+        shell: pwsh
+        run: ./build.ps1 -Target ${{ matrix.platform }} -Version $env:RELEASE_VERSION
+
+      # The artifact is zipped on download anyway; upload the release zip's
+      # contents so the download is not a zip inside a zip.
+      - name: Extract release files
+        shell: pwsh
+        run: Expand-Archive -Path "dist/PawnJson-$env:RELEASE_VERSION-${{ matrix.platform }}-x86.zip" -DestinationPath package
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PawnJson-${{ env.RELEASE_VERSION }}-${{ matrix.platform }}-x86
+          path: package/
+          if-no-files-found: error
+
+  # The cross-compiled Linux binary cannot run on Windows, so the unit tests
+  # also run on a real 32-bit Linux build.
+  linux-tests:
+    name: Linux x86 tests
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install compilers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential gcc-multilib g++-multilib cmake ninja-build
+
+      - name: Build
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DPAWN_JSON_BUILD_32BIT=ON
+          cmake --build build --parallel
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Verify exports
+        run: |
+          plugin=build/plugins/PawnJson.so
+          file "$plugin"
+          for symbol in ComponentEntryPoint Supports Load Unload AmxLoad AmxUnload; do
+            nm -D --defined-only "$plugin" | grep -qw "$symbol" || { echo "missing export: $symbol"; exit 1; }
+          done
+
+  # Only on a manual run with "publish_release" checked, and only after both
+  # platforms built and the Linux tests passed.
+  publish:
+    name: Publish release
+    if: github.event_name == 'workflow_dispatch' && inputs.publish_release
+    needs: [release, linux-tests]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          version="$INPUT_VERSION"
+          if [ -z "$version" ]; then
+            version=$(sed -nE 's/.*set\(PAWN_JSON_VERSION "([0-9]+\.[0-9]+\.[0-9]+)".*/\1/p' CMakeLists.txt | head -n1)
+          fi
+          echo "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || { echo "Invalid version '$version'"; exit 1; }
+          echo "RELEASE_VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Check that the tag is free
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "v$RELEASE_VERSION" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo "Release v$RELEASE_VERSION already exists; pick another version."
+            exit 1
+          fi
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: PawnJson-${{ env.RELEASE_VERSION }}-*
+          path: artifacts
+
+      # Each artifact holds the extracted release files; zip them again as
+      # release assets.
+      - name: Create zips
+        run: |
+          mkdir release
+          for dir in artifacts/*/; do
+            name=$(basename "$dir")
+            (cd "$dir" && zip -qr "$GITHUB_WORKSPACE/release/$name.zip" .)
+          done
+          ls -l release
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "v$RELEASE_VERSION" release/*.zip \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "Pawn.Json $RELEASE_VERSION" \
+            --generate-notes

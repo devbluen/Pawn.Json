@@ -1,0 +1,61 @@
+{
+  "version": 3,
+  "configurePresets": [
+    {
+      "name": "windows-x86",
+      "displayName": "Windows 32-bit (SA-MP and open.mp)",
+      "description": "Visual Studio 2022. For Linux builds from Windows, use build.ps1.",
+      "generator": "Visual Studio 17 2022",
+      "architecture": {
+        "value": "Win32",
+        "strategy": "set"
+      },
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      }
+    },
+    {
+      "name": "linux-x86",
+      "displayName": "Linux 32-bit (SA-MP and open.mp)",
+      "description": "Native Linux build; requires gcc-multilib/g++-multilib",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "PAWN_JSON_BUILD_32BIT": "ON"
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "windows-x86",
+      "configurePreset": "windows-x86",
+      "configuration": "Release"
+    },
+    {
+      "name": "linux-x86",
+      "configurePreset": "linux-x86"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "windows-x86",
+      "configurePreset": "windows-x86",
+      "configuration": "Release",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "linux-x86",
+      "configurePreset": "linux-x86",
+      "output": { "outputOnFailure": true }
+    }
+  ]
+}
