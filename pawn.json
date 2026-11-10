@@ -1,0 +1,11 @@
+{
+	"supports": ["samp", "openmp"],
+	"plugins": {
+		"windows": "PawnJson-*-windows-x86.zip",
+		"linux": "PawnJson-*-linux-x86.zip"
+	},
+	"layout": {
+		"samp":   { "plugins": "samp/plugins", "include": "samp/pawno/include" },
+		"openmp": { "components": "open.mp/components", "include": "open.mp/qawno/include" }
+	}
+}
